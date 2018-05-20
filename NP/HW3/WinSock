@@ -1,0 +1,394 @@
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <windows.h>
+#include <list>
+using namespace std;
+
+#include "resource.h"
+
+#define SERVER_PORT 11111
+
+#define WM_SOCKET_NOTIFY (WM_USER + 1)
+#define WM_CGI_NOTIFY (WM_USER + 2)
+
+const string OK = "HTTP/1.1 200 OK\r\n";
+const string HTML_TYPE = "Content-Type: text/html\r\n\r\n";
+
+struct Remote_host{
+	int idx;
+	WPARAM sockfd;
+	struct sockaddr_in addr;
+	string ip;
+	string port;
+	string filename;
+	FILE *fin = NULL;
+	int isconnect = 0;
+
+};
+
+struct Host {
+	WPARAM sockfd;
+	FILE *fin = NULL;
+	string URI;
+	string qstr;
+	Remote_host rhost[6];
+};
+
+map<WPARAM, pair<Host, int> > hosts;
+
+BOOL CALLBACK MainDlgProc(HWND, UINT, WPARAM, LPARAM);
+int EditPrintf (HWND, TCHAR *, ...);
+void recvmsg(HWND, HWND, WPARAM);
+void cgirecv(HWND, HWND, WPARAM);
+void cgisend(HWND, HWND, WPARAM);
+void preprint(HWND, HWND, WPARAM, Host);
+void print(HWND, HWND, WPARAM, string &, int);
+void posprint(HWND, HWND, WPARAM, Host);
+
+//=================================================================
+//	Global Variables
+//=================================================================
+list<SOCKET> Socks;
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
+	LPSTR lpCmdLine, int nCmdShow)
+{
+	return DialogBox(hInstance, MAKEINTRESOURCE(ID_MAIN), NULL, MainDlgProc);
+}
+
+BOOL CALLBACK MainDlgProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
+{
+	WSADATA wsaData;
+
+	static HWND hwndEdit;
+	static SOCKET msock, ssock;
+	static struct sockaddr_in sa;
+
+	int err;
+
+
+	switch(Message) 
+	{
+		case WM_INITDIALOG:
+			hwndEdit = GetDlgItem(hwnd, IDC_RESULT);
+			break;
+		case WM_COMMAND:
+			switch(LOWORD(wParam))
+			{
+				case ID_LISTEN:
+
+					WSAStartup(MAKEWORD(2, 0), &wsaData);
+
+					//create master socket
+					msock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+					if( msock == INVALID_SOCKET ) {
+						EditPrintf(hwndEdit, TEXT("=== Error: create socket error ===\r\n"));
+						WSACleanup();
+						return TRUE;
+					}
+
+					err = WSAAsyncSelect(msock, hwnd, WM_SOCKET_NOTIFY, FD_ACCEPT | FD_CLOSE | FD_READ | FD_WRITE);
+
+					if ( err == SOCKET_ERROR ) {
+						EditPrintf(hwndEdit, TEXT("=== Error: select error ===\r\n"));
+						closesocket(msock);
+						WSACleanup();
+						return TRUE;
+					}
+
+					//fill the address info about server
+					sa.sin_family		= AF_INET;
+					sa.sin_port			= htons(SERVER_PORT);
+					sa.sin_addr.s_addr	= INADDR_ANY;
+
+					//bind socket
+					err = bind(msock, (LPSOCKADDR)&sa, sizeof(struct sockaddr));
+
+					if( err == SOCKET_ERROR ) {
+						EditPrintf(hwndEdit, TEXT("=== Error: binding error ===\r\n"));
+						WSACleanup();
+						return FALSE;
+					}
+
+					err = listen(msock, 2);
+		
+					if( err == SOCKET_ERROR ) {
+						EditPrintf(hwndEdit, TEXT("=== Error: listen error ===\r\n"));
+						WSACleanup();
+						return FALSE;
+					}
+					else {
+						EditPrintf(hwndEdit, TEXT("=== Server START ===\r\n"));
+					}
+
+					break;
+				case ID_EXIT:
+					EndDialog(hwnd, 0);
+					break;
+			};
+			break;
+
+		case WM_CLOSE:
+			EndDialog(hwnd, 0);
+			break;
+
+		case WM_SOCKET_NOTIFY:
+			switch( WSAGETSELECTEVENT(lParam) )
+			{
+				case FD_ACCEPT:
+					ssock = accept(msock, NULL, NULL);
+					Socks.push_back(ssock);
+					EditPrintf(hwndEdit, TEXT("=== Accept one new client(%d), List size:%d ===\r\n"), ssock, Socks.size());
+					Sleep(50);
+					break;
+				case FD_READ:
+				//Write your code for read event here.
+					recvmsg(hwnd, hwndEdit, ssock);
+					break;
+				case FD_WRITE:
+				//Write your code for write event here
+					
+					break;
+				case FD_CLOSE:
+					break;
+			};
+			break;
+		case WM_CGI_NOTIFY:
+			switch (WSAGETSELECTEVENT(lParam))
+			{
+				case FD_READ:
+					cgirecv(hwnd, hwndEdit, wParam);
+					Sleep(50);
+					break;
+				case FD_WRITE:
+					break;
+				case FD_CLOSE:
+					break;
+			}
+			break;
+
+		default:
+			return FALSE;
+
+
+	};
+
+	return TRUE;
+}
+
+int EditPrintf (HWND hwndEdit, TCHAR * szFormat, ...)
+{
+     TCHAR   szBuffer [1024] ;
+     va_list pArgList ;
+
+     va_start (pArgList, szFormat) ;
+     wvsprintf (szBuffer, szFormat, pArgList) ;
+     va_end (pArgList) ;
+
+     SendMessage (hwndEdit, EM_SETSEL, (WPARAM) -1, (LPARAM) -1) ;
+     SendMessage (hwndEdit, EM_REPLACESEL, FALSE, (LPARAM) szBuffer) ;
+     SendMessage (hwndEdit, EM_SCROLLCARET, 0, 0) ;
+	 return SendMessage(hwndEdit, EM_GETLINECOUNT, 0, 0); 
+}
+
+void recvmsg(HWND hwnd, HWND hwndEdit, WPARAM sockfd){
+	Host host;
+	char buf[10005];
+	int len = recv(sockfd, buf, sizeof(buf), 0);
+	buf[len] = 0;
+
+	host.sockfd = sockfd;
+	string htmlmsg = OK + HTML_TYPE;
+	send(sockfd, htmlmsg.c_str(), htmlmsg.size(), 0);
+
+
+	// GET
+	char *tok = strtok(buf, " \r\n");
+	// URI
+	tok = strtok(NULL, " \r\n");
+	host.URI = string(tok);
+	if (host.URI[0] == '/') host.URI.erase(0, 1);
+	for (int i = 1; i < int(host.URI.size()); i++){
+		if (host.URI[i - 1] == '?') {
+			host.qstr = host.URI.substr(i, int(host.URI.size()) - i + 1);
+			host.URI.erase(i - 1, int(host.URI.size()) - i + 2);
+			break;
+		}
+	}
+	if (host.URI == "form_get.htm"){
+		ifstream fin("form_get.htm");
+		string filemsg((istreambuf_iterator<char>(fin)), istreambuf_iterator<char>());
+		send(sockfd, filemsg.c_str(), filemsg.size(), 0);
+		return;
+	}
+	else if (host.URI == "hw3.cgi"){
+		int flag[6];
+		char *msg = strdup(host.qstr.c_str()), *tok[6][3];
+		tok[1][0] = strtok(msg, "&");
+		tok[1][1] = strtok(NULL, "&");
+		tok[1][2] = strtok(NULL, "&");
+		flag[1] = 0;
+		for (int i = 2; i < 6; i++){
+			tok[i][0] = strtok(NULL, "&");
+			tok[i][1] = strtok(NULL, "&");
+			tok[i][2] = strtok(NULL, "&");
+			flag[i] = 0;
+		}
+
+		for (int i = 1; i < 6; i++){
+			if (strlen(tok[i][0]) > 3){
+				host.rhost[i].ip = string(tok[i][0]).erase(0, 3);
+				flag[i]++;
+				unsigned int IP = inet_addr(host.rhost[i].ip.c_str());
+				if (IP == INADDR_NONE){
+					struct hostent *he = gethostbyname(host.rhost[i].ip.c_str());
+					if (he != 0){
+						struct in_addr** addr_list = (struct in_addr **)he->h_addr_list;
+						host.rhost[i].addr.sin_addr = **addr_list;
+					}
+				}
+				else{
+					host.rhost[i].addr.sin_addr.s_addr = IP;
+				}
+			}
+			if (strlen(tok[i][1]) > 3){
+				host.rhost[i].port = string(tok[i][1]).erase(0, 3);
+				flag[i]++;
+				host.rhost[i].addr.sin_port = htons(atoi(host.rhost[i].port.c_str()));
+			}
+			if (strlen(tok[i][2]) > 3) {
+				host.rhost[i].filename = string(tok[i][2]).erase(0, 3);
+				host.rhost[i].fin = fopen(host.rhost[i].filename.c_str(), "r");
+				if (host.rhost[i].fin != NULL) flag[i]++;
+			}
+			if (flag[i] != 3) host.rhost[i].isconnect = -1;
+			else {
+				host.rhost[i].idx = i;
+				host.rhost[i].addr.sin_family = AF_INET;
+//				EditPrintf(hwndEdit, TEXT("%s %s "), host.rhost[i].ip.c_str(), host.rhost[i].port.c_str());
+//				EditPrintf(hwndEdit, TEXT("%s %d\n"), host.rhost[i].filename.c_str(), host.rhost[i].isconnect);
+				host.rhost[i].sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+				ioctlsocket(host.rhost[i].sockfd, FIONBIO, NULL);
+			}
+		}
+		free(msg);
+		// connect
+		for (int i = 1; i < 6; i++){
+			if (host.rhost[i].isconnect == -1) continue;
+			if (connect(host.rhost[i].sockfd, (const struct sockaddr *) &host.rhost[i].addr, sizeof(host.rhost[i].addr)) < 0) {
+				if (errno != EINPROGRESS && errno != EALREADY){
+					EditPrintf(hwndEdit, TEXT("Error : Fail connect\r\n"));
+					return;
+				}
+			}
+			host.rhost[i].isconnect = 1;
+			EditPrintf(hwndEdit, TEXT("Success connect\r\n"));
+			if (WSAAsyncSelect(host.rhost[i].sockfd, hwnd, WM_CGI_NOTIFY, FD_READ | FD_CLOSE) == SOCKET_ERROR) {
+				EditPrintf(hwndEdit, TEXT("Error : WSAAsyncSelect\r\n"));
+			}
+			hosts[host.rhost[i].sockfd] = make_pair(host, i);
+		}
+	}
+
+	preprint(hwnd, hwndEdit, sockfd, host);
+}
+
+void preprint(HWND hwnd, HWND hwndEdit, WPARAM sockfd, Host host){
+	string msg;
+
+	msg += "<html>\n";
+	msg += "<head>\n";
+	msg += "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" />\n";
+	msg += "</head>\n";
+	msg += "<body bgcolor=#336699>\n";
+	msg += "<font face=\"Courier New\" size=2 color=#FFFF99>\n";
+	msg += "<table width=\"800\" border=\"1\">\n";
+	msg += "<tr>\n";
+
+	for (int i = 1; i < 6; i++){
+		msg += "<td>";
+		if (host.rhost[i].ip != "") msg += host.rhost[i].ip;
+		msg += "</td>\n";
+	}
+	msg += "</tr>\n";
+	msg += "<tr>\n";
+	for (int i = 1; i < 6; i++){
+		stringstream ss;
+		string tmp;
+		ss << i << endl;
+		ss >> tmp;
+		msg += "<td valign=\"top\" id=\"m" + tmp + "\"></td>\n";
+	}
+	msg += "</tr>\n";
+	msg += "</table>\n";
+
+	send(sockfd, msg.c_str(), msg.size(), 0);
+}
+
+void print(HWND hwnd, HWND hwndEdit, WPARAM sockfd, string &msg, int idx){
+	stringstream ss;
+	string num, tmp;
+	ss << idx;
+	ss >> num;
+	tmp = string("<script>document.all['m") + num + string("'].innerHTML += \"");
+	for (int i = 0; i < int(msg.size()); i++){
+		if (msg[i] == '\"') tmp += "&quot;";
+		else if (msg[i] == '\'') tmp += "&apos;";
+		else if (msg[i] == '&') tmp += "&amp;";
+		else if (msg[i] == '<') tmp += "&lt;";
+		else if (msg[i] == '>') tmp += "&gt;";
+		else if (msg[i] == '\n') tmp += "<br>";
+		else if (msg[i] == '\r') ;
+		else tmp.push_back(msg[i]);
+	}
+	tmp += "\";</script>\n";
+	send(sockfd, tmp.c_str(), tmp.size(), 0);
+}
+
+void posprint(HWND hwnd, HWND hwndEdit, WPARAM sockfd){
+	string msg = "</font>\n</body>\n</html>\r\n\r\n";
+	send(sockfd, msg.c_str(), msg.size(), 0);
+}
+
+void cgirecv(HWND hwnd, HWND hwndEdit, WPARAM sockfd){
+
+	Host &host = hosts[sockfd].first;
+	int idx = hosts[sockfd].second;
+
+	string msg;
+	char tmp[10005];
+	int len = recv(sockfd, tmp, sizeof(tmp), 0);
+	tmp[len] = 0;
+	msg = string(tmp);
+	if (msg.size() == 0) return;
+	print(hwnd, hwndEdit, host.sockfd, msg, idx);
+	if (int(msg.size()) > 1 && msg[int(msg.size()) - 2] == '%' && msg[int(msg.size()) - 1] == ' ') {
+		host.rhost[idx].isconnect = 2;
+		Sleep(50);
+		cgisend(hwnd, hwndEdit, sockfd);
+	}
+}
+
+void cgisend(HWND hwnd, HWND hwndEdit, WPARAM sockfd){
+
+	Host &host = hosts[sockfd].first;
+	int idx = hosts[sockfd].second;
+
+	if (host.rhost[idx].isconnect != 2) return;
+
+	char tmp[10005];
+	string msg;
+	fgets(tmp, sizeof(tmp), host.rhost[idx].fin);
+	msg = string(tmp);
+	print(hwnd, hwndEdit, host.sockfd, msg, idx);
+	send(sockfd, msg.c_str(), msg.size(), 0);
+	host.rhost[idx].isconnect = 1;
+
+	if (msg.substr(0, 4) == "exit") hosts.erase(sockfd);
+}
