@@ -18,25 +18,6 @@ clean:
 #                         TEST                          #
 #########################################################
 
-$(TEST)0: $(LIB).o start.o $(TEST)0.o
-	gcc $(CXXFLAGS) -o $@ $^
-
-$(TEST)0s: $(LIB).so start.o $(TEST)0.o  
-	gcc $(CXXFLAGS) -o $@ $^
-
-$(TEST)1: $(LIB).o $(LIB).so start.o $(TEST)1.o
-	gcc $(CXXFLAGS) -o $@ $^
-
-$(TEST)1s: $(LIB).so start.o $(TEST)1.o  
-	gcc $(CXXFLAGS) -o $@ $^
-
-$(TEST)2: $(LIB).o $(LIB).so start.o $(TEST)2.o
-	gcc $(CXXFLAGS) -o $@ $^
-
-$(TEST)2s: $(LIB).so start.o $(TEST)2.o  
-	gcc $(CXXFLAGS) -o $@ $^
-
-
 $(TEST): $(LIB).o $(LIB).so start.o $(TEST).o
 	gcc $(CXXFLAGS) -o $@ $^
 
@@ -47,16 +28,7 @@ $(TEST)s: $(LIB).so start.o $(TEST).o
 #                        TEST.o                         #
 #########################################################
 
-$(TEST)0.o: $(TEST)0.c
-	gcc $(CCFLAGS) $<
-
-$(TEST)1.o: $(TEST)1.c
-	gcc $(CCFLAGS) $<
-
-$(TEST)2.o: $(TEST)2.c
-	gcc $(CCFLAGS) $<
-
-$(TEST).o: $(TEST).c
+%.o: %.c
 	export LD_LIBRARY_PATH=.
 	gcc $(CCFLAGS) $<
 
