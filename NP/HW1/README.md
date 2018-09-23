@@ -1,8 +1,6 @@
-# NP Hw1 #
+# Remote Access System
 
 ## Spec ##
-
-### Project #1: Remote Access System (ras). 
 
 In this homework, you are asked to design rsh-like access systems,
 called remote access systems, including both 
