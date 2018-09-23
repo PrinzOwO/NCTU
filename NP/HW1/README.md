@@ -127,7 +127,7 @@ for ras.
 
 % date
   Unknown Command: [date].
-\# Let TA do this "cp /bin/date bin"  in your csh directory
+# Let TA do this "cp /bin/date bin"  in your csh directory
 % date
   Wed Oct  1 00:41:50 CST 2003
 % exit
