@@ -1,4 +1,4 @@
-# Unix3
+# Chat in LAN
 
 ## Homework Description
 + In this homework, you have to implement a simple chat program in LAN using Linux packet(7) socket. Instead of sending IP packets, you have to broadcast chat messages using layer 2 broadcast packets. The requirement of this homework is listed as follows.
